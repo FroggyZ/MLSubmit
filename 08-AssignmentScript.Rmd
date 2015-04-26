@@ -1,0 +1,177 @@
+---
+title: "Machine Learning and Well-Doing Fitness predictions"
+author: "FroggyZ"
+date: "Sunday, April 26, 2015"
+output: html_document
+---
+
+### Summary
+This project uses fitness data and a machine learning algorith which aim is to predict how well people are doing their exercise. The data file comes from the **"Weight Lifting Exercises Dataset"** (http://groupware.les.inf.puc-rio.br/har).
+
+### Data sets and Data Cleaning
+
+#### Acquiring Data:
+
+First we set our working directory and then download the data from original site, and finally we read them and check their dimensions:
+
+```{r dataStep, echo=FALSE, message=FALSE}
+library(caret)
+setwd("C:/RWork/DataScience/08-PracticalMachineLearning/Assignment")  
+#download.file("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile = "pml-training.csv")  
+#download.file("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile = "pml-testing.csv")  
+trainSet <- read.csv(file="pml-training.csv", header=TRUE, sep=",")  
+testSet  <- read.csv(file="pml-testing.csv" , header=TRUE, sep=",")  
+train.nbobs <- dim(trainSet)[1]; train.nbvar <- dim(trainSet)[2]
+test.nbobs  <- dim(testSet)[1] ; test.nbvar  <- dim(testSet)[2]
+```
+
+For the training and testing data set we note respectively `r train.nbobs` and `r test.nbobs` observations (rows), and `r train.nbvar` variables (columns). So which such a huge difference, what is called here a testing set, is really just a data set that will be used for prediction purposes asked in grading part of the assignment. And having such a huge training dataset (nearly **20000 rows**) will allow us to generate an additionnal training set in order to assess our "OUT of Sample Eroor".
+
+#### Data Cleaning:   
+
+The aim of this section is to reduce the number of variable predictors in our training dataset.  
+
+```{r dataCleaning, message=FALSE}
+# 1) Remove irrelevant variables and create a cleaned dataset
+trainSetC <- trainSet[, -c(1:7)]
+step1 <- dim(trainSetC)[2]
+# 2) Check for near zero variance variables:
+nzv  <- nearZeroVar(trainSetC)
+if (length(nzv)!=0) trainSetC <- trainSetC[, -nzv]
+step2 <- dim(trainSetC)[2]
+# ==> No near Zero Variance variable to remove
+# 3) Suppress variables with too many NAs or ""  ++++
+# summary(trainSet)
+trainSetC <- trainSetC[, !grepl("kurtosis|skewness|max|min|amplitude|avg|stddev|var", names(trainSetC))]
+step3 <- dim(trainSetC)[2]
+# 4) Check for highly correlated variables (above 0.90 or -0.90):
+correlationMatrix <- cor(trainSetC[,-53])  # exclude response variable
+# find attributes that are highly corrected
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.9)
+# suppress those highly correlated variables
+trainSetC <- trainSetC[ , -highlyCorrelated]
+step4 <- dim(trainSetC)[2]
+```
+
+1) The very first thing we did was to look at the training dataset and check if there are some variables which seem irrelevant (using str() function, reading paper at data website, etc.). We decided that the first 7 variables of the training data set were not very meaningful for the aim of this project. These variables are: **X** (index), **user_name**, **raw_timestamp_part_1**, **raw_timestamp_part_2**, **cvtd_timestamp**, **new_window** and **nuw_window**. So we removed these 7 variables.  
+
+2) Then we checked if we have near zero variance variables, using nearZeroVar function of the caret package. There was no variable with nzv at this stage.
+
+3) We checked the count of **NAs**, **""** and **#DIV/0!** for each variable. Using summary() function and checking results one by one, it appears that all the variables starting with **kurtosis**, **skewness**, **max**, **min**, **amplitude**, **avg**, **stddev**, **var** have all a huge amount of these missing values. So these variables will be suppressed as they will add nothing for prediction purpose. There is **100** variables starting with **kurtosis**, **skewness**, **max**, **min**, **amplitude**, **avg**, **stddev**, **var**. So suppressing these variables gives a datafile with **`r step3`** variables.
+
+4) Lastly we checked for highly correlated variables (>0.90 or <-0.90). We found that among the **`r step3-1`** variables (response variable is excluded), 7 are highly correlated: **accel_belt_z**, **roll_belt**, **accel_belt_y**, **accel_belt_x**, **gyros_arm_y**      **gyros_forearm_z**, and **gyros_dumbbell_x**. Thus, we suppressed also these last ones.
+
+Now we have a training dataset with **`r train.nbobs`** observations and **`r step4-1`** predictor variables + **1** response variable (**classe**). We also apply the same rules to the **testSet** which we will rename **gradeSet** as it doesn't look like a real testing dataset.
+
+```{r fixGradeSet}
+gradeSet  <- testSet
+gradeSetC <- gradeSet [, -c(1:7)]
+gradeSetC <- gradeSetC[, !grepl("kurtosis|skewness|max|min|amplitude|avg|stddev|var", names(gradeSetC))]
+gradeSetC <- gradeSetC[, -highlyCorrelated]
+```
+
+
+### Choice and Application of a Machine Learning Algorithm  
+
+As there is a huge amount of observations, significant amount of predictors (45 variables), an objective a predicting 20 test cases (==> high accuracy level needed), and requirement of assessing in sample error as well as out sample error using cross-validation, a **random forest algorithm using a cross-validation (CV) method repeated 5 times** has been choosen.   
+
+We partitionned our cleaned dataset which has nearly 20000 rows, into a training subset (60%) and a test subset (40%). And in order to reduce computing time we also emulate parallel processing.
+
+```{r rfWithCV}
+library(caret)
+library(e1071)  # to be loaded for CARET package
+library(RANN)   # to be loaded for CARET package
+library(randomForest)
+library(doParallel)
+
+set.seed(777)
+InTrain  <- createDataPartition(y=trainSetC$classe, p=0.60, list=FALSE)
+trainDta <- trainSetC[ InTrain, ]
+testDta  <- trainSetC[-InTrain, ]
+
+trainCtrl <- trainControl(method="cv", number=5, allowParallel=TRUE)
+
+## Set up parallel processing
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+
+rf <- train(classe ~ .,data=trainDta, method="rf", trControl=trainCtrl,
+            importance=TRUE)
+
+rf
+rf$finalModel
+
+## turn off parallel processing
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+On the above printed results we can see that with this random forest algorithm, cross-validated 5 times, we get an **IN sample error** of (1 - Accuracy) =  (1 - 0.988621) = 0.011379 (or **1.14%**), and an OOB estimate of the IN sample error rate of about **0.78%**.
+Thus, we get an excellent cross-validation.  
+
+Let's graph the importance variables MeanDecreaseAccuracy and MeanDecreaseGini and identify the most important variables:  
+
+```{r rfPlot1, echo=FALSE}
+library(ggplot2)
+library(scales)
+library(grid)
+library(gridExtra)
+
+rf.res <- data.frame(rf$finalModel$importance)
+rf.res <- cbind(param=rownames(rf.res), rf.res)
+# str(rf.res)
+
+fig1 <- ggplot(data=rf.res, aes(x = reorder(param,MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+     
+     labs(title = "Plot of Variable Importance After Random Forest",
+          x     = "Fitness Variable",
+          y     = "Mean Decrease in Accuracy") +
+     
+     theme(plot.title = element_text(lineheight=1, face="bold", size=rel(1.25), vjust=1.25),
+           axis.title.x = element_text(face="bold", vjust=0, size=12),
+           axis.text.x  = element_text(angle=45, vjust=0.5, size=8),
+           axis.title.y = element_text(face="bold", vjust=1, size=12),
+           axis.text.y  = element_text(vjust=0.5, size=6)) +
+     
+     scale_y_continuous(limits = c(0, 0.18), breaks = seq(0, 0.18, 0.02)) +
+     geom_point(stat = "identity", fill="blue", color="blue") +
+     coord_flip()
+fig1
+```
+
+
+```{r rfplot2, echo=FALSE}
+fig2 <- ggplot(data=rf.res, aes(x = reorder(param,MeanDecreaseGini), y = MeanDecreaseGini)) +
+     
+     labs(title = "Plot of Variable Importance After Random Forest",
+          x     = "Fitness Variables",
+          y     = "Mean Decrease in Gini") +
+     
+     theme(plot.title = element_text(lineheight=1, face="bold", size=rel(1.25), vjust=1.25),
+           axis.title.x = element_text(face="bold", vjust=0, size=12),
+           axis.text.x  = element_text(angle=45, vjust=0.5, size=8),
+           axis.title.y = element_text(face="bold", vjust=1, size=12),
+           axis.text.y  = element_text(vjust=0.5, size=6)) +
+     
+     scale_y_continuous(limits = c(0, 1000), breaks = seq(0, 1000, 50)) +
+     geom_point(stat = "identity", fill="red", color="red") +
+     coord_flip()
+fig2
+```
+
+Both indicators give the same first variable (**yaw_belt**), and with the gini indicator the next variables are: **pitch_forearm**, **pitch_belt**, **magnet_dumbbell_z**, and **magnet_dumbbell_y**.  
+
+Let's now check for OUT sample error using the test dataset:  
+```{r outError}
+# Check predictions with testSet:
+# Check predictions with testSet:
+predictions <- predict(rf, testDta)
+confusionMatrix(predictions, testDta$classe)
+```
+
+We can see that we have an **excellent accuracy (0.9906)** and that most if not all other parameters given by the confusionMatrix (ex. sensitivity, specificity, etc.) are very good.  
+
+
+### Conclusion  
+
+The random forest algorithm we trained with 5 cross-validations, estimated a "forest" with 23 trees has the most accurate. We got a very ggod accuracy when applied to its randomly selected test dataset (40% of the original 19622 observations).
